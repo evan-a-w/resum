@@ -97,7 +97,7 @@ pub fn resum(attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded2 = if let (Some(y_ty), Some(r_ty)) = (args.yield_ty, args.resume_ty) {
         quote! {
             #(#attrs2)*
-            #vis2 fn #ident #gen_ts (#inputs2) -> impl ::resum::Resum<Yield = #y_ty, Resume = #r_ty, Output = #output_ts> #(+ #lifetime_bounds)* {
+            #vis2 fn #ident #gen_ts (#inputs2) -> impl ::resum::Resum<Yield = #y_ty, Resume = #r_ty, Output = #output_ts> + ::resum::ResumBranch<Yield = #y_ty, Resume = #r_ty, Output = #output_ts> #(+ #lifetime_bounds)* {
                 let __start = move || { #cont_expr };
                 ::resum::Coroutine::from_start(__start)
             }
@@ -105,7 +105,7 @@ pub fn resum(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {
             #(#attrs2)*
-            #vis2 fn #ident #gen_ts (#inputs2) -> impl ::resum::Resum<Yield = #y_ident, Resume = #r_ident, Output = #output_ts> #(+ #lifetime_bounds)* {
+            #vis2 fn #ident #gen_ts (#inputs2) -> impl ::resum::Resum<Yield = #y_ident, Resume = #r_ident, Output = #output_ts> + ::resum::ResumBranch<Yield = #y_ident, Resume = #r_ident, Output = #output_ts> #(+ #lifetime_bounds)* {
                 let __start = move || { #cont_expr };
                 ::resum::Coroutine::from_start(__start)
             }

@@ -51,8 +51,8 @@ pub mod __rt {
 
     /// State machine powering a coroutine instance.
     pub enum State<'a, Y, R, O> {
-        Entry(Option<Box<dyn FnMut() -> Continuation<'a, Y, R, O> + 'a>>),
-        Next(Box<dyn Fn(R) -> Continuation<'a, Y, R, O> + 'a>),
+        Entry(std::rc::Rc<dyn Fn() -> Continuation<'a, Y, R, O> + 'a>),
+        Next(std::rc::Rc<dyn Fn(R) -> Continuation<'a, Y, R, O> + 'a>),
         Done,
     }
 
@@ -69,9 +69,9 @@ pub mod __rt {
     /// Helper to build a `State::Entry` from a start closure.
     pub fn entry<'a, Y, R, O, F>(f: F) -> State<'a, Y, R, O>
     where
-        F: FnMut() -> Continuation<'a, Y, R, O> + 'a,
+        F: Fn() -> Continuation<'a, Y, R, O> + 'a,
     {
-        State::Entry(Some(Box::new(f)))
+        State::Entry(std::rc::Rc::new(f))
     }
 }
 
@@ -84,7 +84,7 @@ impl<'a, Y, R, O> Coroutine<'a, Y, R, O> {
     /// Builds a coroutine from a start closure returning a `Continuation`.
     pub fn from_start<F>(start: F) -> Self
     where
-        F: FnMut() -> __rt::Continuation<'a, Y, R, O> + 'a,
+        F: Fn() -> __rt::Continuation<'a, Y, R, O> + 'a,
     {
         Self {
             state: __rt::entry(start),
@@ -92,25 +92,23 @@ impl<'a, Y, R, O> Coroutine<'a, Y, R, O> {
     }
 }
 
-impl<'a, Y, R, O> Resum for Coroutine<'a, Y, R, O> {
+impl<'a, Y: 'a, R: 'a, O: 'a> Resum for Coroutine<'a, Y, R, O> {
     type Yield = Y;
     type Resume = R;
     type Output = O;
 
     fn start(&mut self) -> ResumPoll<Self::Yield, Self::Output> {
         use __rt::{Continuation, State};
-        match &mut self.state {
-            State::Entry(f_opt) => {
-                let mut f = f_opt
-                    .take()
-                    .expect("start() called more than once without resuming");
+        match &self.state {
+            State::Entry(f) => {
                 match f() {
                     Continuation::Done(output) => {
-                        self.state = State::Done;
+                        // Do not alter state; allow multi-shot start
                         ResumPoll::Ready(output)
                     }
                     Continuation::Yield { value, next } => {
-                        self.state = State::Next(next);
+                        let next_rc = std::rc::Rc::new(move |r: R| (next)(r));
+                        self.state = State::Next(next_rc);
                         ResumPoll::Yield(value)
                     }
                 }
@@ -141,11 +139,83 @@ impl<'a, Y, R, O> Resum for Coroutine<'a, Y, R, O> {
                 ResumPoll::Ready(output)
             }
             Continuation::Yield { value, next } => {
-                // We reached a deeper suspension point; advance the stored continuation
-                // to this new point so further resumes continue from here.
-                self.state = State::Next(next);
+                // Advance to deeper suspension point.
+                let next_rc = std::rc::Rc::new(move |r: R| (next)(r));
+                self.state = State::Next(next_rc);
                 ResumPoll::Yield(value)
             }
+        }
+    }
+}
+
+/// Branching API: persistent, non-mutating operations returning a new coroutine.
+pub trait ResumBranch: Sized {
+    type Yield;
+    type Resume;
+    type Output;
+
+    fn start_new(&self) -> (ResumPoll<Self::Yield, Self::Output>, Self);
+
+    fn resume_new<V>(&self, value: V) -> (ResumPoll<Self::Yield, Self::Output>, Self)
+    where
+        Self::Resume: From<V>;
+}
+
+impl<'a, Y: 'a, R: 'a, O: 'a> ResumBranch for Coroutine<'a, Y, R, O> {
+    type Yield = Y;
+    type Resume = R;
+    type Output = O;
+
+    fn start_new(&self) -> (ResumPoll<Self::Yield, Self::Output>, Self) {
+        use __rt::{Continuation, State};
+        match &self.state {
+            State::Entry(f) => match f() {
+                Continuation::Done(output) => (
+                    ResumPoll::Ready(output),
+                    Coroutine {
+                        state: State::Entry(f.clone()),
+                    },
+                ),
+                Continuation::Yield { value, next } => {
+                    let next_rc = std::rc::Rc::new(move |r: R| (next)(r));
+                    (
+                        ResumPoll::Yield(value),
+                        Coroutine {
+                            state: State::Next(next_rc),
+                        },
+                    )
+                }
+            },
+            State::Next(_) => panic!("start_new() called while suspended"),
+            State::Done => panic!("start_new() called after completion"),
+        }
+    }
+
+    fn resume_new<V>(&self, value: V) -> (ResumPoll<Self::Yield, Self::Output>, Self)
+    where
+        Self::Resume: From<V>,
+    {
+        use __rt::{Continuation, State};
+        match &self.state {
+            State::Next(next) => match next(<Self::Resume as From<V>>::from(value)) {
+                Continuation::Done(output) => (
+                    ResumPoll::Ready(output),
+                    Coroutine {
+                        state: State::Next(next.clone()),
+                    },
+                ),
+                Continuation::Yield { value, next } => {
+                    let next_rc = std::rc::Rc::new(move |r: R| (next)(r));
+                    (
+                        ResumPoll::Yield(value),
+                        Coroutine {
+                            state: State::Next(next_rc),
+                        },
+                    )
+                }
+            },
+            State::Entry(_) => panic!("resume_new() called before start"),
+            State::Done => panic!("resume_new() called after completion"),
         }
     }
 }
