@@ -47,3 +47,26 @@ fn capture_reference() {
     assert!(matches!(done, ResumPoll::Ready(_)));
     if let ResumPoll::Ready(v) = done { assert_eq!(v, b'e' as usize); }
 }
+
+// Demonstrate storing a non-'static coroutine inside a struct using lifetime-parameterised Resum
+#[test]
+fn store_non_static_in_struct() {
+    // Use an owned String so the coroutine captures a non-'static reference
+    let s = String::from("hello");
+
+    struct Holder<'a, C>
+    where
+        C: Resum<'a, Yield = usize, Resume = usize, Output = usize>,
+    {
+        c: C,
+        _lt: std::marker::PhantomData<&'a ()>,
+    }
+
+    let mut h = Holder { c: with_ref(&s), _lt: std::marker::PhantomData };
+
+    // The coroutine yields the length (5), then we resume with an index
+    assert!(matches!(h.c.start(), ResumPoll::Yield(5)));
+    let done = h.c.resume(1usize);
+    assert!(matches!(done, ResumPoll::Ready(_)));
+    if let ResumPoll::Ready(v) = done { assert_eq!(v, b'e' as usize); }
+}
