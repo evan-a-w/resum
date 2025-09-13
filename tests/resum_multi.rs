@@ -7,6 +7,12 @@ fn two_yields(a: i32) -> i32 {
     a + x + y
 }
 
+#[resum(yield_ty = T, resume_ty = T)]
+fn generic<T: Clone + 'static>(a: T) -> T {
+    let x = coyield!(a.clone());
+    x
+}
+
 #[test]
 fn multi_yield() {
     let mut c = two_yields(2);
@@ -23,6 +29,13 @@ fn multi_yield() {
 fn with_ref<'a>(s: &'a str) -> usize {
     let i: usize = coyield!(s.len());
     s.as_bytes()[i] as usize
+}
+
+#[test]
+fn generic_test() {
+    let mut c = generic(1u32);
+    let _ = c.start();
+    assert!(matches!(c.resume(1u32), ResumPoll::Ready(1)));
 }
 
 #[test]
