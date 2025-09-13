@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse::Parse, parse::ParseStream, parse_macro_input, Block, Expr, ItemFn, Pat, Stmt, Type};
+use syn::{parse::Parse, parse::ParseStream, parse_macro_input, Block, Expr, ItemFn, Stmt, Type};
 
 struct ResumArgs {
     yield_ty: Option<Type>,
@@ -123,13 +123,6 @@ pub fn resum(attr: TokenStream, item: TokenStream) -> TokenStream {
     expanded2.into()
 }
 
-/// Represents a single suspension point encountered while scanning the block.
-struct YieldPoint {
-    pre: Vec<Stmt>,
-    binder: Option<Pat>,
-    yield_expr: Expr,
-}
-
 fn is_coyield_macro_expr(expr: &Expr) -> Option<&syn::Macro> {
     if let Expr::Macro(m) = expr {
         let path = &m.mac.path;
@@ -147,68 +140,108 @@ fn extract_coyield_arg(m: &syn::Macro) -> Expr {
 
 fn compile_block_to_continuation(
     block: &Block,
-    _y_ident: &syn::Ident,
+    y_ident: &syn::Ident,
     r_ty_tokens: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
-    // Linear scan of top-level statements, splitting on `coyield!` occurrences.
-    let mut segments: Vec<YieldPoint> = Vec::new();
-    let mut current: Vec<Stmt> = Vec::new();
+    compile_block_with_cont(block, y_ident, r_ty_tokens, quote! { ::resum::__rt::Continuation::Done(()) })
+}
 
-    for stmt in &block.stmts {
-        match stmt {
+fn compile_block_with_cont(
+    block: &Block,
+    y_ident: &syn::Ident,
+    r_ty_tokens: proc_macro2::TokenStream,
+    cont: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    compile_stmts(&block.stmts, y_ident, r_ty_tokens, cont)
+}
+
+fn compile_stmts(
+    stmts: &[Stmt],
+    y_ident: &syn::Ident,
+    r_ty_tokens: proc_macro2::TokenStream,
+    cont: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    if let Some((last, rest)) = stmts.split_last() {
+        let tail = match last {
+            Stmt::Expr(expr, None) => {
+                compile_expr(expr, y_ident, r_ty_tokens.clone(), quote! { ::resum::__rt::Continuation::Done(__expr) })
+            }
+            Stmt::Expr(expr, Some(_)) => {
+                compile_expr(expr, y_ident, r_ty_tokens.clone(), cont)
+            }
             Stmt::Local(local) => {
                 if let Some(init) = &local.init {
-                    let init_expr = &init.expr;
-                    if let Some(mac) = is_coyield_macro_expr(init_expr) {
-                        // `let <pat> = coyield!(<expr>);`
-                        let binder = Some(local.pat.clone());
-                        let y_expr = extract_coyield_arg(mac);
-                        segments.push(YieldPoint { pre: current, binder, yield_expr: y_expr });
-                        current = Vec::new();
-                        continue;
-                    }
+                    let expr = &init.expr;
+                    let pat = &local.pat;
+                    let rest_ts = quote! { { let #pat = __expr; #cont } };
+                    compile_expr(expr, y_ident, r_ty_tokens.clone(), rest_ts)
+                } else {
+                    quote! {{ let #local; #cont }}
                 }
-                current.push(stmt.clone());
             }
-            Stmt::Expr(Expr::Macro(m), _semi) => {
-                // `coyield!(<expr>)` possibly with a semicolon
-                if m.mac.path.segments.last().map(|s| s.ident == "coyield").unwrap_or(false) {
-                    let y_expr = extract_coyield_arg(&m.mac);
-                    segments.push(YieldPoint { pre: current, binder: None, yield_expr: y_expr });
-                    current = Vec::new();
-                    continue;
+            _ => cont.clone(),
+        };
+        compile_stmts(rest, y_ident, r_ty_tokens, tail)
+    } else {
+        cont
+    }
+}
+
+fn compile_expr(
+    expr: &Expr,
+    y_ident: &syn::Ident,
+    r_ty_tokens: proc_macro2::TokenStream,
+    cont: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    match expr {
+        Expr::Macro(m) if is_coyield_macro_expr(expr).is_some() => {
+            let y_expr = extract_coyield_arg(&m.mac);
+            let r_ty = r_ty_tokens.clone();
+            quote! {
+                ::resum::__rt::Continuation::Yield {
+                    value: (#y_expr),
+                    next: Box::new(move |__resume: #r_ty| {
+                        let __expr = __resume;
+                        #cont
+                    }),
                 }
-                current.push(stmt.clone());
             }
-            _ => current.push(stmt.clone()),
+        }
+        Expr::If(ifexpr) => {
+            let then_ts = compile_block_with_cont(&ifexpr.then_branch, y_ident, r_ty_tokens.clone(), cont.clone());
+            let else_ts = if let Some((_tok, else_expr)) = &ifexpr.else_branch {
+                match else_expr.as_ref() {
+                    Expr::Block(b) => compile_block_with_cont(&b.block, y_ident, r_ty_tokens.clone(), cont.clone()),
+                    _ => compile_expr(else_expr, y_ident, r_ty_tokens.clone(), cont.clone()),
+                }
+            } else {
+                cont.clone()
+            };
+            compile_expr(&ifexpr.cond, y_ident, r_ty_tokens, quote! { if __expr { #then_ts } else { #else_ts } })
+        }
+        Expr::Match(mexpr) => {
+            let mut arms_ts = Vec::new();
+            for arm in &mexpr.arms {
+                let pat = &arm.pat;
+                let guard_ts = if let Some((_if_token, guard_expr)) = &arm.guard {
+                    quote! { if #guard_expr }
+                } else {
+                    quote! {}
+                };
+                let body_ts = compile_expr(&arm.body, y_ident, r_ty_tokens.clone(), cont.clone());
+                arms_ts.push(quote! { #pat #guard_ts => { #body_ts } });
+            }
+            compile_expr(&mexpr.expr, y_ident, r_ty_tokens, quote! { match __expr { #(#arms_ts),* } })
+        }
+        Expr::Block(b) => {
+            compile_block_with_cont(&b.block, y_ident, r_ty_tokens, cont)
+        }
+        _ => {
+            let expr_ts = expr.to_token_stream();
+            quote! {{
+                let __expr = { #expr_ts };
+                #cont
+            }}
         }
     }
-
-    // Remaining tail statements form the final Done block.
-    let tail = current;
-
-    // Build Continuation expression from the tail backwards through the yields.
-    let mut acc: proc_macro2::TokenStream = quote! {
-        ::resum::__rt::Continuation::Done({ #(#tail)* })
-    };
-
-    for yp in segments.into_iter().rev() {
-        let pre = yp.pre;
-        let y = yp.yield_expr;
-        let binder_stmt = yp.binder.map(|pat| quote! { let #pat = __resume; });
-
-        let r_ty = r_ty_tokens.clone();
-        acc = quote! {{
-            #(#pre)*
-            ::resum::__rt::Continuation::Yield {
-                value: (#y),
-                next: Box::new(move |__resume: #r_ty| {
-                    #binder_stmt
-                    #acc
-                }),
-            }
-        }};
-    }
-
-    acc
 }
