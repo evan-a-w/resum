@@ -44,7 +44,7 @@ pub mod __rt {
     pub enum Continuation<'a, Y, R, O> {
         Yield {
             value: Y,
-            next: Box<dyn FnMut(R) -> Continuation<'a, Y, R, O> + 'a>,
+            next: Box<dyn Fn(R) -> Continuation<'a, Y, R, O> + 'a>,
         },
         Done(O),
     }
@@ -52,7 +52,7 @@ pub mod __rt {
     /// State machine powering a coroutine instance.
     pub enum State<'a, Y, R, O> {
         Entry(Option<Box<dyn FnMut() -> Continuation<'a, Y, R, O> + 'a>>),
-        Next(Box<dyn FnMut(R) -> Continuation<'a, Y, R, O> + 'a>),
+        Next(Box<dyn Fn(R) -> Continuation<'a, Y, R, O> + 'a>),
         Done,
     }
 
@@ -127,19 +127,25 @@ impl<'a, Y, R, O> Resum for Coroutine<'a, Y, R, O> {
         Self::Resume: From<V>,
     {
         use __rt::{Continuation, State};
-        match &mut self.state {
-            State::Next(next) => match next(<Self::Resume as From<V>>::from(value)) {
-                Continuation::Done(output) => {
-                    self.state = State::Done;
-                    ResumPoll::Ready(output)
-                }
-                Continuation::Yield { value, next } => {
-                    self.state = State::Next(next);
-                    ResumPoll::Yield(value)
-                }
-            },
+        // Call the stored continuation without consuming it to allow multi-shot.
+        let cont = match &self.state {
+            State::Next(next) => next(<Self::Resume as From<V>>::from(value)),
             State::Entry(_) => panic!("resume() called before start()"),
             State::Done => panic!("resume() called after completion"),
+        };
+
+        match cont {
+            Continuation::Done(output) => {
+                // Do NOT advance state; keep the last suspension point alive
+                // for multi-shot resumption from the same point.
+                ResumPoll::Ready(output)
+            }
+            Continuation::Yield { value, next } => {
+                // We reached a deeper suspension point; advance the stored continuation
+                // to this new point so further resumes continue from here.
+                self.state = State::Next(next);
+                ResumPoll::Yield(value)
+            }
         }
     }
 }
