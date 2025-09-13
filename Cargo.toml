@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 resum-macros = { path = "resum-macros" }
+
+git = "https://github.com/evan-a-w/resum"
