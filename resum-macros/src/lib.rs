@@ -94,10 +94,18 @@ pub fn resum(attr: TokenStream, item: TokenStream) -> TokenStream {
         .lifetimes()
         .map(|lt| lt.lifetime.clone())
         .collect();
+    // Choose the return lifetime for the Resum/ResumBranch traits:
+    // - If the function declares at least one lifetime, use the first one.
+    // - Otherwise default to 'static (no captured borrows).
+    let ret_lt: proc_macro2::TokenStream = if let Some(first_lt) = lifetime_bounds.first() {
+        first_lt.to_token_stream()
+    } else {
+        quote!('static)
+    };
     let expanded2 = if let (Some(y_ty), Some(r_ty)) = (args.yield_ty, args.resume_ty) {
         quote! {
             #(#attrs2)*
-            #vis2 fn #ident #gen_ts (#inputs2) -> impl ::resum::Resum<Yield = #y_ty, Resume = #r_ty, Output = #output_ts> + ::resum::ResumBranch<Yield = #y_ty, Resume = #r_ty, Output = #output_ts> #(+ #lifetime_bounds)* {
+            #vis2 fn #ident #gen_ts (#inputs2) -> impl ::resum::Resum<#ret_lt, Yield = #y_ty, Resume = #r_ty, Output = #output_ts> + ::resum::ResumBranch<#ret_lt, Yield = #y_ty, Resume = #r_ty, Output = #output_ts> #(+ #lifetime_bounds)* {
                 let __start = move || { #cont_expr };
                 ::resum::Coroutine::from_start(__start)
             }
@@ -105,7 +113,7 @@ pub fn resum(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {
             #(#attrs2)*
-            #vis2 fn #ident #gen_ts (#inputs2) -> impl ::resum::Resum<Yield = #y_ident, Resume = #r_ident, Output = #output_ts> + ::resum::ResumBranch<Yield = #y_ident, Resume = #r_ident, Output = #output_ts> #(+ #lifetime_bounds)* {
+            #vis2 fn #ident #gen_ts (#inputs2) -> impl ::resum::Resum<#ret_lt, Yield = #y_ident, Resume = #r_ident, Output = #output_ts> + ::resum::ResumBranch<#ret_lt, Yield = #y_ident, Resume = #r_ident, Output = #output_ts> #(+ #lifetime_bounds)* {
                 let __start = move || { #cont_expr };
                 ::resum::Coroutine::from_start(__start)
             }

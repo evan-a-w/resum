@@ -18,7 +18,7 @@ pub enum ResumPoll<Y, O> {
 /// - `Yield`: value type produced when suspending.
 /// - `Resume`: value type the coroutine expects on resume after a yield.
 /// - `Output`: final result when the coroutine completes.
-pub trait Resum {
+pub trait Resum<'a> {
     type Yield;
     type Resume;
     type Output;
@@ -92,7 +92,7 @@ impl<'a, Y, R, O> Coroutine<'a, Y, R, O> {
     }
 }
 
-impl<'a, Y: 'a, R: 'a, O: 'a> Resum for Coroutine<'a, Y, R, O> {
+impl<'a, Y: 'a, R: 'a, O: 'a> Resum<'a> for Coroutine<'a, Y, R, O> {
     type Yield = Y;
     type Resume = R;
     type Output = O;
@@ -149,7 +149,7 @@ impl<'a, Y: 'a, R: 'a, O: 'a> Resum for Coroutine<'a, Y, R, O> {
 }
 
 /// Branching API: persistent, non-mutating operations returning a new coroutine.
-pub trait ResumBranch: Sized {
+pub trait ResumBranch<'a>: Sized {
     type Yield;
     type Resume;
     type Output;
@@ -161,7 +161,7 @@ pub trait ResumBranch: Sized {
         Self::Resume: From<V>;
 }
 
-impl<'a, Y: 'a, R: 'a, O: 'a> ResumBranch for Coroutine<'a, Y, R, O> {
+impl<'a, Y: 'a, R: 'a, O: 'a> ResumBranch<'a> for Coroutine<'a, Y, R, O> {
     type Yield = Y;
     type Resume = R;
     type Output = O;
@@ -222,12 +222,15 @@ impl<'a, Y: 'a, R: 'a, O: 'a> ResumBranch for Coroutine<'a, Y, R, O> {
 
 /// Convenience free function to resume a coroutine with a value whose type
 /// determines the coroutine's `Resume` associated type via inference.
-pub fn resume<T, R>(co: &mut T, value: R) -> ResumPoll<T::Yield, T::Output>
+pub fn resume<T, R>(co: &mut T, value: R) -> ResumPoll<<T as Resum<'_>>::Yield, <T as Resum<'_>>::Output>
 where
-    T: Resum,
-    T::Resume: From<R>,
+    for<'a> T: Resum<'a>,
+    for<'a> <T as Resum<'a>>::Resume: From<R>,
 {
-    Resum::resume(co, value)
+    // Select the appropriate implementation of Resum<'a> for this T.
+    // The lifetime parameter is unconstrained here and will be inferred
+    // based on the specific coroutine instance captured in `co`.
+    <T as Resum<'_>>::resume(co, value)
 }
 
 // Re-export the attribute macro for convenience.
