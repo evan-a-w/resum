@@ -29,9 +29,7 @@ pub trait Resum<'a> {
     /// Resumes from the last suspension point with a value.
     ///
     /// Accepts any type that can convert into `Self::Resume`.
-    fn resume<V>(&mut self, value: V) -> ResumPoll<Self::Yield, Self::Output>
-    where
-        Self::Resume: From<V>;
+    fn resume(&mut self, value: Self::Resume) -> ResumPoll<Self::Yield, Self::Output>;
 }
 
 /// Internal runtime types used by the proc-macro expansion.
@@ -120,14 +118,12 @@ impl<'a, Y: 'a, R: 'a, O: 'a> Resum<'a> for Coroutine<'a, Y, R, O> {
         }
     }
 
-    fn resume<V>(&mut self, value: V) -> ResumPoll<Self::Yield, Self::Output>
-    where
-        Self::Resume: From<V>,
+    fn resume(&mut self, value: Self::Resume) -> ResumPoll<Self::Yield, Self::Output>
     {
         use __rt::{Continuation, State};
         // Call the stored continuation without consuming it to allow multi-shot.
         let cont = match &self.state {
-            State::Next(next) => next(<Self::Resume as From<V>>::from(value)),
+            State::Next(next) => next(value),
             State::Entry(_) => panic!("resume() called before start()"),
             State::Done => panic!("resume() called after completion"),
         };
@@ -218,19 +214,6 @@ impl<'a, Y: 'a, R: 'a, O: 'a> ResumBranch<'a> for Coroutine<'a, Y, R, O> {
             State::Done => panic!("resume_new() called after completion"),
         }
     }
-}
-
-/// Convenience free function to resume a coroutine with a value whose type
-/// determines the coroutine's `Resume` associated type via inference.
-pub fn resume<T, R>(co: &mut T, value: R) -> ResumPoll<<T as Resum<'_>>::Yield, <T as Resum<'_>>::Output>
-where
-    for<'a> T: Resum<'a>,
-    for<'a> <T as Resum<'a>>::Resume: From<R>,
-{
-    // Select the appropriate implementation of Resum<'a> for this T.
-    // The lifetime parameter is unconstrained here and will be inferred
-    // based on the specific coroutine instance captured in `co`.
-    <T as Resum<'_>>::resume(co, value)
 }
 
 // Re-export the attribute macro for convenience.
