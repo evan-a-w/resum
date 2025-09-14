@@ -145,14 +145,29 @@ impl<'a, Y: 'a, R: 'a, O: 'a> Resum<'a> for Coroutine<'a, Y, R, O> {
 }
 
 /// Branching API: persistent, non-mutating operations returning a new coroutine.
-pub trait ResumBranch<'a>: Sized {
+///
+/// This trait is object-safe so it can be used via `dyn ResumBranch`.
+pub trait ResumBranch<'a> {
     type Yield;
     type Resume;
     type Output;
 
-    fn start_new(&self) -> (ResumPoll<Self::Yield, Self::Output>, Self);
+    /// Starts execution from the beginning, returning the poll result and a new branched coroutine.
+    fn start_new(
+        &self,
+    ) -> (
+        ResumPoll<Self::Yield, Self::Output>,
+        Box<dyn ResumBranch<'a, Yield = Self::Yield, Resume = Self::Resume, Output = Self::Output> + 'a>,
+    );
 
-    fn resume_new(&self, value: Self::Resume) -> (ResumPoll<Self::Yield, Self::Output>, Self);
+    /// Resumes from the last suspension point with a value, returning the poll result and a new branched coroutine.
+    fn resume_new(
+        &self,
+        value: Self::Resume,
+    ) -> (
+        ResumPoll<Self::Yield, Self::Output>,
+        Box<dyn ResumBranch<'a, Yield = Self::Yield, Resume = Self::Resume, Output = Self::Output> + 'a>,
+    );
 }
 
 impl<'a, Y: 'a, R: 'a, O: 'a> ResumBranch<'a> for Coroutine<'a, Y, R, O> {
@@ -160,23 +175,28 @@ impl<'a, Y: 'a, R: 'a, O: 'a> ResumBranch<'a> for Coroutine<'a, Y, R, O> {
     type Resume = R;
     type Output = O;
 
-    fn start_new(&self) -> (ResumPoll<Self::Yield, Self::Output>, Self) {
+    fn start_new(
+        &self,
+    ) -> (
+        ResumPoll<Self::Yield, Self::Output>,
+        Box<dyn ResumBranch<'a, Yield = Self::Yield, Resume = Self::Resume, Output = Self::Output> + 'a>,
+    ) {
         use __rt::{Continuation, State};
         match &self.state {
             State::Entry(f) => match f() {
                 Continuation::Done(output) => (
                     ResumPoll::Ready(output),
-                    Coroutine {
+                    Box::new(Coroutine {
                         state: State::Entry(f.clone()),
-                    },
+                    }),
                 ),
                 Continuation::Yield { value, next } => {
                     let next_rc = std::rc::Rc::new(move |r: R| (next)(r));
                     (
                         ResumPoll::Yield(value),
-                        Coroutine {
+                        Box::new(Coroutine {
                             state: State::Next(next_rc),
-                        },
+                        }),
                     )
                 }
             },
@@ -185,24 +205,29 @@ impl<'a, Y: 'a, R: 'a, O: 'a> ResumBranch<'a> for Coroutine<'a, Y, R, O> {
         }
     }
 
-    fn resume_new(&self, value: Self::Resume) -> (ResumPoll<Self::Yield, Self::Output>, Self)
-    {
+    fn resume_new(
+        &self,
+        value: Self::Resume,
+    ) -> (
+        ResumPoll<Self::Yield, Self::Output>,
+        Box<dyn ResumBranch<'a, Yield = Self::Yield, Resume = Self::Resume, Output = Self::Output> + 'a>,
+    ) {
         use __rt::{Continuation, State};
         match &self.state {
             State::Next(next) => match next(value) {
                 Continuation::Done(output) => (
                     ResumPoll::Ready(output),
-                    Coroutine {
+                    Box::new(Coroutine {
                         state: State::Next(next.clone()),
-                    },
+                    }),
                 ),
                 Continuation::Yield { value, next } => {
                     let next_rc = std::rc::Rc::new(move |r: R| (next)(r));
                     (
                         ResumPoll::Yield(value),
-                        Coroutine {
+                        Box::new(Coroutine {
                             state: State::Next(next_rc),
-                        },
+                        }),
                     )
                 }
             },
