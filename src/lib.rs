@@ -152,9 +152,7 @@ pub trait ResumBranch<'a>: Sized {
 
     fn start_new(&self) -> (ResumPoll<Self::Yield, Self::Output>, Self);
 
-    fn resume_new<V>(&self, value: V) -> (ResumPoll<Self::Yield, Self::Output>, Self)
-    where
-        Self::Resume: From<V>;
+    fn resume_new(&self, value: Self::Resume) -> (ResumPoll<Self::Yield, Self::Output>, Self);
 }
 
 impl<'a, Y: 'a, R: 'a, O: 'a> ResumBranch<'a> for Coroutine<'a, Y, R, O> {
@@ -187,13 +185,11 @@ impl<'a, Y: 'a, R: 'a, O: 'a> ResumBranch<'a> for Coroutine<'a, Y, R, O> {
         }
     }
 
-    fn resume_new<V>(&self, value: V) -> (ResumPoll<Self::Yield, Self::Output>, Self)
-    where
-        Self::Resume: From<V>,
+    fn resume_new(&self, value: Self::Resume) -> (ResumPoll<Self::Yield, Self::Output>, Self)
     {
         use __rt::{Continuation, State};
         match &self.state {
-            State::Next(next) => match next(<Self::Resume as From<V>>::from(value)) {
+            State::Next(next) => match next(value) {
                 Continuation::Done(output) => (
                     ResumPoll::Ready(output),
                     Coroutine {
