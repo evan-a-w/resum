@@ -31,12 +31,6 @@ impl Parse for ResumArgs {
 
 /// Attribute macro to transform a function with `coyield!` suspension points
 /// into a resumable coroutine implementing `resum::Resum`.
-///
-/// Limitations (v0):
-/// - `coyield!` must appear at the top level of the function body, either as
-///   a statement `coyield!(expr);` or as a `let` initializer `let pat = coyield!(expr);`.
-/// - `return` statements are not specially handled; prefer tail expressions.
-/// - Control-flow constructs with `coyield!` nested deep are not supported yet.
 #[proc_macro_attribute]
 pub fn resum(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as ResumArgs);
